@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Commute Optimizer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <div class="app">
+    <header class="header">
+      <div class="header-inner">
+        <div class="logo">COMMUTE<span class="logo-accent">OS</span></div>
+        <div class="header-sub">Melbourne route intelligence</div>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- Trip details -->
+      <section class="panel input-panel">
+        <div class="panel-grid">
+
+          <div class="field-group">
+            <label class="field-label">FROM</label>
+            <input id="origin" class="field-input" type="text" placeholder="e.g. Footscray VIC" autocomplete="off" />
+            <div id="origin-autocomplete" class="autocomplete-dropdown"></div>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">TO</label>
+            <input id="destination" class="field-input" type="text" placeholder="e.g. Melbourne CBD" autocomplete="off" />
+            <div id="destination-autocomplete" class="autocomplete-dropdown"></div>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">DEPART</label>
+            <input id="depart-time" class="field-input" type="time" value="08:00" />
+          </div>
+
+          <div class="field-group">
+            <label class="field-label">DAY</label>
+            <select id="depart-day" class="field-input field-select">
+              <option>Monday</option>
+              <option>Tuesday</option>
+              <option>Wednesday</option>
+              <option>Thursday</option>
+              <option>Friday</option>
+              <option>Saturday</option>
+              <option>Sunday</option>
+            </select>
+          </div>
+
+          <div class="field-group field-group-wide">
+            <label class="field-label">VIA (OPTIONAL) <span class="field-hint">— a known cheaper route, e.g. "Melbourne CBD"</span></label>
+            <input id="via-point" class="field-input" type="text" placeholder="e.g. Melbourne CBD, VIC" autocomplete="off" />
+            <div id="via-autocomplete" class="autocomplete-dropdown"></div>
+          </div>
+
+        </div>
+
+        <div class="pref-row">
+          <span class="field-label">OPTIMISE FOR</span>
+          <div class="pref-pills">
+            <button class="pref-pill" data-pref="fastest" onclick="setPref('fastest')">⚡ Fastest</button>
+            <button class="pref-pill active" data-pref="cheapest" onclick="setPref('cheapest')">💰 Cheapest</button>
+            <button class="pref-pill" data-pref="balanced" onclick="setPref('balanced')">⚖ Balanced</button>
+          </div>
+        </div>
+
+        <button class="analyse-btn" onclick="analyse()">
+          <span class="btn-text">ANALYSE ROUTE</span>
+          <span class="btn-arrow">→</span>
+        </button>
+
+        <div id="error-msg" class="error-msg" style="display:none;"></div>
+      </section>
+
+      <!-- Route comparison -->
+      <section class="results" id="results" style="display:none;">
+
+        <div class="summary-strip" id="summary-strip">
+          <div class="summary-stat">
+            <div class="summary-val" id="sum-save">—</div>
+            <div class="summary-lbl">min saved vs slowest</div>
+          </div>
+          <div class="summary-divider"></div>
+          <div class="summary-stat">
+            <div class="summary-val" id="sum-toll-diff">—</div>
+            <div class="summary-lbl">toll difference</div>
+          </div>
+          <div class="summary-divider"></div>
+          <div class="summary-stat">
+            <div class="summary-val" id="sum-annual">—</div>
+            <div class="summary-lbl">annual one-way saving</div>
+          </div>
+          <div class="summary-divider"></div>
+          <div class="summary-stat">
+            <div class="summary-val" id="sum-peak">—</div>
+            <div class="summary-lbl">traffic condition</div>
+          </div>
+        </div>
+
+        <div class="route-list" id="route-list"></div>
+
+        <div class="tip-box" id="tip-box">
+          <div class="tip-label">COMMUTE TIP</div>
+          <div class="tip-text" id="tip-text"></div>
+        </div>
+
+      </section>
+
+      <!-- The map stays hidden until routes are available. -->
+      <section class="map-section" id="map-section" style="display:none;">
+        <div class="map-label">ROUTE MAP</div>
+        <div id="map" class="map-container"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- A browser key is entered locally and is never stored in the repository. -->
+  <div class="api-hint" id="api-hint">
+    ⚙ No API key set — <a href="#" onclick="showConfig()">configure</a>
+  </div>
+
+  <!-- API key settings -->
+  <div class="modal-overlay" id="config-modal" style="display:none;">
+    <div class="modal">
+      <div class="modal-title">API Configuration</div>
+      <p class="modal-body">Enter your Google Maps browser key. In Google Cloud, enable the <strong>Maps JavaScript API</strong> and <strong>Places API</strong>, turn on billing, and restrict the key to your website.</p>
+      <label class="field-label" style="margin-top:1rem; display:block;">GOOGLE MAPS API KEY</label>
+      <input id="api-key-input" class="field-input" type="text" placeholder="AIza..." />
+      <div class="modal-actions">
+        <button class="modal-btn" onclick="saveConfig()">Save & reload</button>
+        <button class="modal-btn modal-btn-secondary" onclick="closeConfig()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="tolls.js"></script>
+  <script src="app.js"></script>
+
+  <!-- app.js loads Google Maps after an API key has been provided. -->
+  <div id="maps-loader"></div>
+
+</body>
+</html>
