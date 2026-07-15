@@ -51,6 +51,11 @@ function loadGoogleMaps(apiKey) {
 }
 
 async function init() {
+  // Restore persisted hourly value (default 25).
+  const saved = localStorage.getItem('commute_hourly_value');
+  const hvInput = document.getElementById('hourly-value');
+  if (hvInput) hvInput.value = (saved !== null && saved !== '') ? saved : 25;
+
   const key = getApiKey();
   if (key) {
     document.getElementById('api-hint').style.display = 'none';
@@ -99,8 +104,40 @@ function initAutocomplete() {
 function setPref(p) {
   currentPref = p;
   document.querySelectorAll('.pref-pill').forEach(el => {
-    el.classList.toggle('active', el.dataset.pref === p);
+    const isActive = el.dataset.pref === p;
+    el.classList.toggle('active', isActive);
+    el.setAttribute('aria-pressed', isActive ? 'true' : 'false');
   });
+  const hvRow = document.getElementById('hourly-value-row');
+  if (hvRow) hvRow.style.display = p === 'best-value' ? 'flex' : 'none';
+}
+
+// Called oninput: only validates negative values immediately; allows empty mid-type.
+function validateHourlyValue() {
+  const input = document.getElementById('hourly-value');
+  const errEl = document.getElementById('hourly-value-error');
+  const val = parseFloat(input.value);
+  errEl.style.display = (Number.isFinite(val) && val < 0) ? 'block' : 'none';
+}
+
+// Called onchange/onblur: persist valid values; reset empty or unparseable to 25.
+function saveHourlyValue() {
+  const input = document.getElementById('hourly-value');
+  const errEl = document.getElementById('hourly-value-error');
+  const val = parseFloat(input.value);
+
+  if (!Number.isFinite(val) || input.value === '') {
+    // Empty or unparseable — reset to default.
+    errEl.style.display = 'none';
+    input.value = 25;
+    localStorage.setItem('commute_hourly_value', '25');
+  } else if (val < 0) {
+    errEl.style.display = 'block';
+    // Do not save an invalid value.
+  } else {
+    errEl.style.display = 'none';
+    localStorage.setItem('commute_hourly_value', String(val));
+  }
 }
 
 async function analyse() {
@@ -111,6 +148,16 @@ async function analyse() {
   const viaPoint = document.getElementById('via-point').value.trim();
 
   if (!origin || !destination) { showError('Enter both origin and destination.'); return; }
+
+  // Block analysis if the hourly value is negative or missing in Best Value mode.
+  if (currentPref === 'best-value') {
+    const hvVal = parseFloat(document.getElementById('hourly-value').value);
+    if (!Number.isFinite(hvVal) || hvVal < 0) {
+      document.getElementById('hourly-value-error').style.display = 'block';
+      showError('Fix the time value input before analysing.');
+      return;
+    }
+  }
 
   const key = getApiKey();
   if (!key) { showError('Add your Google Maps API key first (click ⚙ below).'); return; }
@@ -237,6 +284,7 @@ function renderResults(routes, departTime, departDay) {
   const isPeak = checkPeak(departTime, departDay);
   const isWeekend = ['saturday','sunday'].includes(departDay.toLowerCase());
 
+  // --- Pass 1: build routeData with all per-route fields ---
   const routeData = routes.map((item, idx) => {
     const route = item.route;
     const durationMins = Math.round((route.durationMillis || 0) / 60000);
@@ -247,13 +295,6 @@ function renderResults(routes, departTime, departDay) {
 
     const summary = route.description || `Route ${idx + 1}`;
     const strategy = item.strategy || 'default';
-    const rankingToll = Number.isFinite(tollCost) ? tollCost : Number.POSITIVE_INFINITY;
-
-    // Balanced gives time a little more weight without ignoring a large toll gap.
-    let score;
-    if (currentPref === 'fastest') score = -durationMins;
-    else if (currentPref === 'cheapest') score = -rankingToll;
-    else score = -(durationMins * 0.6 + rankingToll * 3); // balanced
 
     return {
       idx,
@@ -267,15 +308,77 @@ function renderResults(routes, departTime, departDay) {
       tollRoads,
       isPeak,
       isWeekend,
-      score,
+      score: null,
+      netValue: null,
+      annualNetValue: null,
+      verdict: null,
+      isBaseline: false,
       warnings: route.warnings || [],
     };
   });
 
-  routeData.sort((a, b) => b.score - a.score);
+  // --- Pass 2 (Best Value) or legacy scoring ---
+  if (currentPref === 'best-value') {
+    // Read and validate hourly value; fall back to 25 if empty or non-finite.
+    let hourlyValue = parseFloat(document.getElementById('hourly-value').value);
+    if (!Number.isFinite(hourlyValue) || hourlyValue < 0) {
+      hourlyValue = 25;
+      document.getElementById('hourly-value').value = 25;
+    }
+
+    // Identify baseline: lowest known toll, tiebreak by shortest duration.
+    const pricedRoutes = routeData.filter(r => Number.isFinite(r.tollCost));
+    let baseline = null;
+    if (pricedRoutes.length > 0) {
+      const minTollCost = Math.min(...pricedRoutes.map(r => r.tollCost));
+      baseline = pricedRoutes
+        .filter(r => r.tollCost === minTollCost)
+        .sort((a, b) => a.durationMins - b.durationMins)[0];
+      baseline.isBaseline = true;
+    }
+
+    // Compute net values and sort scores.
+    for (const r of routeData) {
+      if (!Number.isFinite(r.tollCost)) {
+        r.verdict = 'unknown-price';
+        r.score = -Infinity;
+      } else {
+        const minutesSaved = baseline.durationMins - r.durationMins;
+        const additionalToll = r.tollCost - baseline.tollCost;
+        const timeValueGained = (minutesSaved / 60) * hourlyValue;
+        r.netValue = timeValueGained - additionalToll;
+        r.annualNetValue = r.netValue * 5 * 48;
+        if (Math.abs(r.netValue) < 0.05)  r.verdict = 'break-even';
+        else if (r.netValue > 0)           r.verdict = 'worth-it';
+        else                               r.verdict = 'not-worth-it';
+        r.score = r.netValue;
+      }
+    }
+
+    // Known-price routes by netValue desc; unknown-price routes by duration asc after them.
+    routeData.sort((a, b) => {
+      if (a.score === b.score) return a.durationMins - b.durationMins;
+      return b.score - a.score;
+    });
+
+  } else {
+    // Existing scoring: fastest / cheapest / balanced (unchanged).
+    for (const r of routeData) {
+      const rankingToll = Number.isFinite(r.tollCost) ? r.tollCost : Number.POSITIVE_INFINITY;
+      // Balanced gives time a little more weight without ignoring a large toll gap.
+      if (currentPref === 'fastest')       r.score = -r.durationMins;
+      else if (currentPref === 'cheapest') r.score = -rankingToll;
+      else                                 r.score = -(r.durationMins * 0.6 + rankingToll * 3);
+    }
+    routeData.sort((a, b) => b.score - a.score);
+  }
 
   // More than four overlapping routes becomes difficult to compare on the map.
   const topRoutes = routeData.slice(0, 4);
+
+  // When all top routes have unknown prices in Best Value mode, suppress BEST MATCH badge.
+  const allUnknown = currentPref === 'best-value' &&
+    topRoutes.every(r => r.verdict === 'unknown-price');
 
   const maxTime = Math.max(...topRoutes.map(r => r.durationMins));
   const minTime = Math.min(...topRoutes.map(r => r.durationMins));
@@ -290,7 +393,7 @@ function renderResults(routes, departTime, departDay) {
   document.getElementById('sum-peak').textContent = isWeekend ? 'Weekend' : isPeak ? '🔴 Peak' : '🟢 Off-peak';
 
   const list = document.getElementById('route-list');
-  list.innerHTML = topRoutes.map((r, i) => buildRouteCard(r, i === 0, minTime, maxToll)).join('');
+  list.innerHTML = topRoutes.map((r, i) => buildRouteCard(r, i === 0 && !allUnknown, minTime, maxToll)).join('');
 
   renderMapRoutes(topRoutes);
 
@@ -330,6 +433,26 @@ function buildRouteCard(r, isBest, fastestMins, maxTollCost) {
     tradeoff = `<div class="route-tradeoff route-tradeoff-win">⚡ ${Math.abs(extraMins)} min faster than other options</div>`;
   }
 
+  // Best Value verdict block — only shown in best-value mode.
+  let verdictHtml = '';
+  if (currentPref === 'best-value') {
+    if (r.isBaseline) {
+      verdictHtml = `<div class="value-verdict value-verdict-baseline">◎ Lowest known toll (baseline)</div>`;
+    } else if (r.verdict === 'worth-it') {
+      const perTrip = Math.abs(r.netValue).toFixed(2);
+      const perYear = Math.abs(Math.round(r.annualNetValue)).toLocaleString();
+      verdictHtml = `<div class="value-verdict value-verdict-win">✦ Worth it: +$${perTrip}/trip (≈ +$${perYear}/year)</div>`;
+    } else if (r.verdict === 'not-worth-it') {
+      const perTrip = Math.abs(r.netValue).toFixed(2);
+      const perYear = Math.abs(Math.round(r.annualNetValue)).toLocaleString();
+      verdictHtml = `<div class="value-verdict value-verdict-loss">✗ Not worth it: −$${perTrip}/trip (≈ −$${perYear}/year)</div>`;
+    } else if (r.verdict === 'break-even') {
+      verdictHtml = `<div class="value-verdict value-verdict-neutral">≈ Break-even</div>`;
+    } else {
+      verdictHtml = `<div class="value-verdict value-verdict-unknown">— Value unavailable — toll price unknown</div>`;
+    }
+  }
+
   return `
     <div class="route-card ${isBest ? 'route-best' : ''}">
       ${isBest ? '<div class="best-badge">BEST MATCH</div>' : ''}
@@ -360,6 +483,7 @@ function buildRouteCard(r, isBest, fastestMins, maxTollCost) {
       </div>
       <div class="route-toll-detail">${tollLabel}</div>
       ${tradeoff}
+      ${verdictHtml}
     </div>
   `;
 }
