@@ -10,7 +10,14 @@ For each search, the app can request:
 2. A route that avoids tolls.
 3. An optional route through a place chosen by the user, such as Melbourne CBD.
 
-It removes near-duplicates, ranks the results by fastest, cheapest, or balanced, and shows the time-versus-toll trade-off for each option.
+It removes near-duplicates and ranks the results by one of four preferences:
+
+- **Fastest** — minimises travel time.
+- **Cheapest** — minimises toll cost.
+- **Balanced** — trades off time and cost.
+- **Best Value** — answers *"Is this toll worth the time I save?"*. Enter your hourly time value (default $25/hr) and each route card shows a net verdict: Worth it, Not worth it, Break-even, or Value unavailable. The net value formula is `(minutes saved ÷ 60) × hourly rate − extra toll cost`; the annual figure assumes one one-way trip per workday for 48 working weeks.
+
+The trade-off for each option is shown on the route card.
 
 ## Run it locally
 

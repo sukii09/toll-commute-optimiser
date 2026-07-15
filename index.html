@@ -63,11 +63,20 @@
 
         <div class="pref-row">
           <span class="field-label">OPTIMISE FOR</span>
-          <div class="pref-pills">
-            <button class="pref-pill" data-pref="fastest" onclick="setPref('fastest')">⚡ Fastest</button>
-            <button class="pref-pill active" data-pref="cheapest" onclick="setPref('cheapest')">💰 Cheapest</button>
-            <button class="pref-pill" data-pref="balanced" onclick="setPref('balanced')">⚖ Balanced</button>
+          <div class="pref-pills" role="group" aria-label="Optimise route for">
+            <button class="pref-pill" data-pref="fastest" aria-pressed="false" onclick="setPref('fastest')">⚡ Fastest</button>
+            <button class="pref-pill active" data-pref="cheapest" aria-pressed="true" onclick="setPref('cheapest')">💰 Cheapest</button>
+            <button class="pref-pill" data-pref="balanced" aria-pressed="false" onclick="setPref('balanced')">⚖ Balanced</button>
+            <button class="pref-pill" data-pref="best-value" aria-pressed="false" onclick="setPref('best-value')">🏆 Best Value</button>
           </div>
+        </div>
+
+        <div id="hourly-value-row" style="display:none; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem;">
+          <label for="hourly-value" class="field-label" style="margin-bottom:0;">YOUR TIME VALUE (AUD/HR)</label>
+          <input id="hourly-value" class="field-input hourly-input" type="number" min="0" step="0.50"
+            aria-describedby="hourly-value-hint" oninput="validateHourlyValue()" onchange="saveHourlyValue()" onblur="saveHourlyValue()" />
+          <span id="hourly-value-hint" class="field-hint">Used to calculate whether a toll is worth the time saved</span>
+          <span id="hourly-value-error" class="field-error" role="alert" style="display:none;">Value must be $0 or more</span>
         </div>
 
         <button class="analyse-btn" onclick="analyse()">

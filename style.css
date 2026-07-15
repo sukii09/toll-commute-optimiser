@@ -74,6 +74,11 @@ a { color: var(--accent2); }
 .field-group-wide { grid-column: 1 / -1; }
 .field-hint { text-transform: none; letter-spacing: normal; color: var(--muted); font-weight: 400; font-size: 0.65rem; }
 
+/* Error line below hourly value input */
+.field-error { font-size: 0.75rem; color: var(--danger); margin-top: 0.25rem; }
+
+.hourly-input { max-width: 110px; }
+
 .field-group { position: relative; }
 
 .field-label {
@@ -239,6 +244,19 @@ a { color: var(--accent2); }
   gap: 0.4rem;
 }
 .route-tradeoff-win { color: var(--accent); }
+
+/* ---- Best Value verdict block ---- */
+.value-verdict {
+  padding-top: 0.6rem;
+  margin-top: 0.6rem;
+  border-top: 1px dashed var(--border);
+  font-size: 0.8rem;
+}
+.value-verdict-win     { color: var(--accent); }
+.value-verdict-loss    { color: var(--danger); }
+.value-verdict-neutral { color: var(--muted); }
+.value-verdict-baseline{ color: var(--accent2); }
+.value-verdict-unknown { color: var(--muted); font-style: italic; }
 
 .route-stats {
   display: grid;
