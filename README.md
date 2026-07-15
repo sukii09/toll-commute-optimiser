@@ -26,10 +26,13 @@ cd toll-commute-optimiser
 In [Google Cloud Console](https://console.cloud.google.com):
 
 1. Create or select a project and enable billing.
-2. Enable **Maps JavaScript API** and **Places API**.
+2. Enable **Maps JavaScript API**, **Places API (New)**, and **Routes API**.
 3. Create an API key.
 4. Restrict the key to websites and add `http://localhost:8080/*` for local development.
-5. Restrict API access to Maps JavaScript API and Places API.
+5. Restrict API access to only Maps JavaScript API, Places API (New), and Routes API.
+
+Do not select every API. A browser key is visible to visitors by design, so website
+and API restrictions are the main safeguards against somebody using it elsewhere.
 
 The key is entered through the settings panel and stored in browser `localStorage`. It is not written to this repository.
 
@@ -47,12 +50,22 @@ Open [http://localhost:8080](http://localhost:8080), choose **configure**, and e
 toll-commute-optimiser/
 ├── index.html   - page structure and API-key settings
 ├── app.js       - Google Maps requests, route comparison, and UI logic
-├── tolls.js     - current Melbourne toll fallback data
+├── tolls.js     - peak-time helpers and published 2026 reference prices
 ├── style.css    - responsive dark interface
 └── README.md
 ```
 
-## Toll data
+## Toll estimates
+
+Route cards use the current Google Routes API toll advisory with an Australian
+Linkt pass setting. If Google detects a toll but cannot provide a price, the app
+shows **price unavailable** and does not rank that option as the cheapest. It
+never silently turns an unpriced toll route into a $0 route.
+
+The published 2026 figures in `tolls.js` are retained as transparent reference
+data, but they are not used to override Google's route-specific price.
+
+## Published reference data
 
 The fallback prices were checked on 14 July 2026 against official operator tables.
 
@@ -64,19 +77,12 @@ The fallback prices were checked on 14 July 2026 against official operator table
 
 CityLink and West Gate Tunnel prices are published quarterly. EastLink prices normally change on 1 July each year.
 
-### Why the values are estimates
-
-The current Google Maps Directions response provides road names in the step instructions but does not provide the exact toll entry and exit points used by this fallback calculator. `tolls.js` therefore matches known road names and chooses a representative account price or trip cap.
-
-This is suitable for comparing route strategies, but it should not be presented as a final charge. A future version should use Google Routes API toll information and retain `tolls.js` only as a fallback.
-
 ## Known limitations
 
-- Toll matching depends on road names appearing in Google's instructions.
-- The fallback currently models passenger cars with an account, not every vehicle or payment method.
-- The West Gate Tunnel AM-peak inbound ramp price cannot be selected reliably from road names alone.
+- Google may detect a toll without returning an estimated price for a particular route.
+- Estimates use the Australian Linkt pass setting and a petrol passenger vehicle, not every vehicle or payment method.
+- Google controls which alternative routes are returned; the optional via point helps reveal another sensible corridor.
 - Annual figures assume one one-way trip per workday for 48 working weeks.
-- The app still uses Google's deprecated `DirectionsService`; migration to Routes API is planned.
 - The project is Melbourne-specific.
 
 ## Keeping prices current

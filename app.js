@@ -1,9 +1,9 @@
-// CommuteOS compares routes that Google may find through different strategies.
-// Travel times come from Google Maps; toll figures are local 2026 estimates.
+// CommuteOS asks Google for several route styles so drivers can compare the
+// time saved with the actual toll estimate, not just accept the fastest route.
 
 let map = null;
-let directionsService = null;
-let directionsRenderers = [];
+let RouteClass = null;
+let routePolylines = [];
 let currentPref = 'cheapest';
 let mapsLoaded = false;
 let autocompleteOrigin = null;
@@ -43,7 +43,7 @@ function loadGoogleMaps(apiKey) {
     };
 
     const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=onMapsReady`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&loading=async&v=weekly&callback=onMapsReady`;
     script.onerror = reject;
     document.body.appendChild(script);
     window.onMapsReady = () => { mapsLoaded = true; resolve(); };
@@ -56,7 +56,7 @@ async function init() {
     document.getElementById('api-hint').style.display = 'none';
     try {
       await loadGoogleMaps(key);
-      initMap();
+      await initMap();
       initAutocomplete();
     } catch(e) {
       const message = e.message === 'Google Maps authentication failed'
@@ -69,15 +69,19 @@ async function init() {
   }
 }
 
-function initMap() {
-  map = new google.maps.Map(document.getElementById('map'), {
+async function initMap() {
+  const [{ Map }, { Route }] = await Promise.all([
+    google.maps.importLibrary('maps'),
+    google.maps.importLibrary('routes'),
+  ]);
+  RouteClass = Route;
+  map = new Map(document.getElementById('map'), {
     center: { lat: -37.8136, lng: 144.9631 }, // Melbourne CBD
     zoom: 11,
     styles: mapStyles,
     disableDefaultUI: true,
     zoomControl: true,
   });
-  directionsService = new google.maps.DirectionsService();
 }
 
 function initAutocomplete() {
@@ -153,10 +157,11 @@ async function analyse() {
 
 function dedupeRoutes(routes) {
   const seen = [];
-  return routes.filter(route => {
-    const duration = summarizeRoute(route).durationSecs;
-    const key = route.summary;
-    const dup = seen.find(s => s.key === key && Math.abs(s.duration - duration) < 60);
+  return routes.filter(item => {
+    const route = item.route;
+    const duration = route.durationMillis || 0;
+    const key = route.description || '';
+    const dup = seen.find(s => s.key === key && Math.abs(s.duration - duration) < 60000);
     if (dup) return false;
     seen.push({ key, duration });
     return true;
@@ -178,55 +183,52 @@ function buildDepartureTime(timeStr, dayStr) {
   return date;
 }
 
-function summarizeRoute(route) {
-  const legs = route.legs || [];
-  return {
-    durationSecs: legs.reduce((sum, leg) => sum + (leg.duration_in_traffic || leg.duration).value, 0),
-    distanceMeters: legs.reduce((sum, leg) => sum + leg.distance.value, 0),
-    steps: legs.flatMap(leg => leg.steps || []),
-    startAddress: legs[0]?.start_address || '',
-    endAddress: legs[legs.length - 1]?.end_address || '',
+async function requestRoutes(origin, destination, departureTime, opts = {}) {
+  const strategy = opts.avoidTolls ? 'toll-free' : opts.waypoint ? 'via-point' : 'default';
+  const request = {
+    origin,
+    destination,
+    travelMode: 'DRIVING',
+    departureTime,
+    routingPreference: 'TRAFFIC_AWARE',
+    computeAlternativeRoutes: Boolean(opts.provideRouteAlternatives),
+    extraComputations: ['TOLLS'],
+    routeModifiers: {
+      avoidTolls: Boolean(opts.avoidTolls),
+      tollPasses: ['AU_LINKT'],
+      vehicleInfo: { emissionType: 'GASOLINE' },
+    },
+    fields: [
+      'description', 'distanceMeters', 'durationMillis', 'legs', 'path',
+      'routeLabels', 'travelAdvisory', 'viewport', 'warnings',
+    ],
   };
+
+  // Google cannot return alternatives and use an intermediate stop in the same
+  // request, so a via route is intentionally its own route search.
+  if (opts.waypoint) {
+    request.intermediates = [{ location: opts.waypoint }];
+    request.computeAlternativeRoutes = false;
+  }
+
+  const { routes = [] } = await RouteClass.computeRoutes(request);
+  return routes.map(route => ({ route, strategy }));
 }
 
-function requestRoutes(origin, destination, departureTime, opts = {}) {
-  return new Promise((resolve, reject) => {
-    const request = {
-      origin,
-      destination,
-      travelMode: google.maps.TravelMode.DRIVING,
-      drivingOptions: {
-        departureTime,
-        trafficModel: google.maps.TrafficModel.BEST_GUESS,
-      },
-      region: 'au',
-    };
+function readGoogleToll(route) {
+  const tollInfo = route.travelAdvisory?.tollInfo;
+  if (!tollInfo) return { status: 'free', total: 0, roads: [] };
 
-    if (opts.provideRouteAlternatives) request.provideRouteAlternatives = true;
-    if (opts.avoidTolls) {
-      request.avoidTolls = true;
-      // Google handles toll avoidance more consistently as a single-route request.
-      request.provideRouteAlternatives = false;
-    }
-    if (opts.waypoint) {
-      request.waypoints = [{ location: opts.waypoint, stopover: true }];
-      request.provideRouteAlternatives = false;
-      request.optimizeWaypoints = false;
-    }
+  const prices = tollInfo.estimatedPrices || [];
+  const price = prices.find(item => item.currencyCode === 'AUD') || prices[0];
+  if (!price) return { status: 'unknown', total: null, roads: ['Toll road'] };
 
-    directionsService.route(request, (result, status) => {
-      if (status === 'OK') {
-        // Remember how we found the route so the result card can explain it.
-        const tag = opts.avoidTolls ? 'toll-free' : opts.waypoint ? 'via-point' : 'default';
-        result.routes.forEach(r => r._strategy = tag);
-        resolve(result.routes);
-      } else if (status === 'ZERO_RESULTS') {
-        resolve([]);
-      } else {
-        reject(new Error(status));
-      }
-    });
-  });
+  const total = Number(price.units || 0) + Number(price.nanos || 0) / 1e9;
+  return {
+    status: 'priced',
+    total: Math.round(total * 100) / 100,
+    roads: ['Google toll estimate'],
+  };
 }
 
 function renderResults(routes, departTime, departDay) {
@@ -235,24 +237,23 @@ function renderResults(routes, departTime, departDay) {
   const isPeak = checkPeak(departTime, departDay);
   const isWeekend = ['saturday','sunday'].includes(departDay.toLowerCase());
 
-  const routeData = routes.map((route, idx) => {
-    const routeSummary = summarizeRoute(route);
-    const steps = routeSummary.steps;
-
-    const durationMins = Math.round(routeSummary.durationSecs / 60);
-    const distanceKm = (routeSummary.distanceMeters / 1000).toFixed(1);
-    const tollResult = estimateTollCost(steps, departDay);
+  const routeData = routes.map((item, idx) => {
+    const route = item.route;
+    const durationMins = Math.round((route.durationMillis || 0) / 60000);
+    const distanceKm = ((route.distanceMeters || 0) / 1000).toFixed(1);
+    const tollResult = readGoogleToll(route);
     const tollCost = tollResult.total;
     const tollRoads = tollResult.roads;
 
-    const summary = route.summary || `Route ${idx + 1}`;
-    const strategy = route._strategy || 'default';
+    const summary = route.description || `Route ${idx + 1}`;
+    const strategy = item.strategy || 'default';
+    const rankingToll = Number.isFinite(tollCost) ? tollCost : Number.POSITIVE_INFINITY;
 
     // Balanced gives time a little more weight without ignoring a large toll gap.
     let score;
     if (currentPref === 'fastest') score = -durationMins;
-    else if (currentPref === 'cheapest') score = -tollCost;
-    else score = -(durationMins * 0.6 + tollCost * 3); // balanced
+    else if (currentPref === 'cheapest') score = -rankingToll;
+    else score = -(durationMins * 0.6 + rankingToll * 3); // balanced
 
     return {
       idx,
@@ -262,13 +263,12 @@ function renderResults(routes, departTime, departDay) {
       durationMins,
       distanceKm,
       tollCost,
+      tollStatus: tollResult.status,
       tollRoads,
       isPeak,
       isWeekend,
       score,
-      startAddress: routeSummary.startAddress,
-      endAddress: routeSummary.endAddress,
-      steps,
+      warnings: route.warnings || [],
     };
   });
 
@@ -279,12 +279,14 @@ function renderResults(routes, departTime, departDay) {
 
   const maxTime = Math.max(...topRoutes.map(r => r.durationMins));
   const minTime = Math.min(...topRoutes.map(r => r.durationMins));
-  const maxToll = Math.max(...topRoutes.map(r => r.tollCost));
-  const minToll = Math.min(...topRoutes.map(r => r.tollCost));
+  const knownTolls = topRoutes.map(r => r.tollCost).filter(Number.isFinite);
+  const maxToll = knownTolls.length ? Math.max(...knownTolls) : null;
+  const minToll = knownTolls.length ? Math.min(...knownTolls) : null;
+  const tollDiff = Number.isFinite(maxToll) && Number.isFinite(minToll) ? maxToll - minToll : null;
 
   document.getElementById('sum-save').textContent = (maxTime - minTime) + ' min';
-  document.getElementById('sum-toll-diff').textContent = '$' + (maxToll - minToll).toFixed(2);
-  document.getElementById('sum-annual').textContent = '$' + annualCost(maxToll - minToll).toLocaleString();
+  document.getElementById('sum-toll-diff').textContent = Number.isFinite(tollDiff) ? '$' + tollDiff.toFixed(2) : '—';
+  document.getElementById('sum-annual').textContent = Number.isFinite(tollDiff) ? '$' + annualCost(tollDiff).toLocaleString() : '—';
   document.getElementById('sum-peak').textContent = isWeekend ? 'Weekend' : isPeak ? '🔴 Peak' : '🟢 Off-peak';
 
   const list = document.getElementById('route-list');
@@ -300,8 +302,13 @@ function renderResults(routes, departTime, departDay) {
 }
 
 function buildRouteCard(r, isBest, fastestMins, maxTollCost) {
-  const annualToll = annualCost(r.tollCost);
-  const tollLabel = r.tollCost === 0 ? '<span class="toll-free">TOLL FREE</span>' : `$${r.tollCost.toFixed(2)} <span class="toll-roads">(${r.tollRoads.join(', ') || 'estimated'} estimate)</span>`;
+  const hasPrice = Number.isFinite(r.tollCost);
+  const annualToll = hasPrice ? annualCost(r.tollCost) : null;
+  const tollLabel = r.tollStatus === 'free'
+    ? '<span class="toll-free">TOLL FREE</span>'
+    : r.tollStatus === 'unknown'
+      ? '<span class="toll-roads">TOLL DETECTED — PRICE UNAVAILABLE</span>'
+      : `$${r.tollCost.toFixed(2)} <span class="toll-roads">(Google estimate with Linkt pass)</span>`;
   const peakLabel = r.isPeak ? '<span class="badge badge-peak">Peak hours</span>' : r.isWeekend ? '<span class="badge badge-offpeak">Weekend</span>' : '<span class="badge badge-offpeak">Off-peak</span>';
 
   const strategyLabels = {
@@ -313,11 +320,11 @@ function buildRouteCard(r, isBest, fastestMins, maxTollCost) {
 
   // This is the question behind the app: is the extra time worth the toll saved?
   const extraMins = r.durationMins - fastestMins;
-  const tollSavedVsMax = maxTollCost - r.tollCost;
+  const tollSavedVsMax = hasPrice && Number.isFinite(maxTollCost) ? maxTollCost - r.tollCost : null;
   let tradeoff = '';
-  if (extraMins > 0 && tollSavedVsMax > 0.01) {
+  if (extraMins > 0 && Number.isFinite(tollSavedVsMax) && tollSavedVsMax > 0.01) {
     tradeoff = `<div class="route-tradeoff">⇄ ${extraMins} min slower than the fastest route, saves $${tollSavedVsMax.toFixed(2)} in tolls</div>`;
-  } else if (extraMins === 0 && tollSavedVsMax > 0.01) {
+  } else if (extraMins === 0 && Number.isFinite(tollSavedVsMax) && tollSavedVsMax > 0.01) {
     tradeoff = `<div class="route-tradeoff route-tradeoff-win">✦ Same travel time, saves $${tollSavedVsMax.toFixed(2)} in tolls</div>`;
   } else if (extraMins < 0) {
     tradeoff = `<div class="route-tradeoff route-tradeoff-win">⚡ ${Math.abs(extraMins)} min faster than other options</div>`;
@@ -343,11 +350,11 @@ function buildRouteCard(r, isBest, fastestMins, maxTollCost) {
           <div class="stat-lbl">km</div>
         </div>
         <div class="route-stat">
-          <div class="stat-num">${r.tollCost === 0 ? '$0' : '$' + r.tollCost.toFixed(2)}</div>
+          <div class="stat-num">${!hasPrice ? '—' : r.tollCost === 0 ? '$0' : '$' + r.tollCost.toFixed(2)}</div>
           <div class="stat-lbl">toll today</div>
         </div>
         <div class="route-stat">
-          <div class="stat-num">$${annualToll.toLocaleString()}</div>
+          <div class="stat-num">${annualToll === null ? '—' : '$' + annualToll.toLocaleString()}</div>
           <div class="stat-lbl">annual toll</div>
         </div>
       </div>
@@ -359,35 +366,26 @@ function buildRouteCard(r, isBest, fastestMins, maxTollCost) {
 
 function renderMapRoutes(routeData) {
   // Remove the previous search before drawing the new choices.
-  directionsRenderers.forEach(r => r.setMap(null));
-  directionsRenderers = [];
+  routePolylines.forEach(line => line.setMap(null));
+  routePolylines = [];
 
   const colors = ['#4ade80', '#60a5fa', '#f59e0b', '#f87171'];
 
-  // Reuse Google's response instead of paying for another route request.
   routeData.forEach((rd, i) => {
-    const renderer = new google.maps.DirectionsRenderer({
-      map,
-      suppressMarkers: i > 0,
+    const lines = rd.route.createPolylines({
       polylineOptions: {
         strokeColor: colors[i] || '#888',
         strokeWeight: i === 0 ? 5 : 3,
         strokeOpacity: i === 0 ? 0.9 : 0.5,
       },
-      preserveViewport: i > 0,
     });
-
-    renderer.setDirections({
-      routes: [rd.route],
-      request: {
-        origin: rd.startAddress,
-        destination: rd.endAddress,
-        travelMode: google.maps.TravelMode.DRIVING,
-      },
+    lines.forEach(line => {
+      line.setMap(map);
+      routePolylines.push(line);
     });
-
-    directionsRenderers.push(renderer);
   });
+
+  if (routeData[0]?.route.viewport) map.fitBounds(routeData[0].route.viewport);
 }
 
 function renderTip(routeData, isPeak, isWeekend) {
@@ -395,10 +393,13 @@ function renderTip(routeData, isPeak, isWeekend) {
   const tips = [];
 
   // Lead with the useful trade-off instead of a generic traffic observation.
-  const maxToll = Math.max(...routeData.map(r => r.tollCost));
-  const cheapestRoute = routeData.reduce((min, r) => r.tollCost < min.tollCost ? r : min, routeData[0]);
-  const tollGap = maxToll - cheapestRoute.tollCost;
-  const timeGap = cheapestRoute.durationMins - Math.min(...routeData.map(r => r.durationMins));
+  const pricedRoutes = routeData.filter(r => Number.isFinite(r.tollCost));
+  const maxToll = pricedRoutes.length ? Math.max(...pricedRoutes.map(r => r.tollCost)) : null;
+  const cheapestRoute = pricedRoutes.reduce((min, r) => r.tollCost < min.tollCost ? r : min, pricedRoutes[0]);
+  const tollGap = cheapestRoute && Number.isFinite(maxToll) ? maxToll - cheapestRoute.tollCost : 0;
+  const timeGap = cheapestRoute
+    ? cheapestRoute.durationMins - Math.min(...routeData.map(r => r.durationMins))
+    : 0;
   if (tollGap > 2 && cheapestRoute !== routeData[0]) {
     tips.push(`The "${cheapestRoute.summary}" route costs $${tollGap.toFixed(2)} less in tolls for ${timeGap} extra minutes — that's $${annualCost(tollGap).toLocaleString()}/year if you take it every workday.`);
   }
@@ -411,8 +412,11 @@ function renderTip(routeData, isPeak, isWeekend) {
       tips.push(`The top 2 routes are within ${topRouteGap} min of each other — compare the toll before choosing.`);
     }
   }
-  if (best.tollCost > 0) {
-    tips.push('Tolls are estimates based on current 2026 account prices; exact entry and exit points can change the final charge.');
+  if (best.tollStatus === 'priced') {
+    tips.push('Google estimated this toll using the Linkt pass setting; the final charge can vary by account and exact entry or exit.');
+  }
+  if (routeData.some(route => route.tollStatus === 'unknown')) {
+    tips.push('Google detected a toll on one option but could not return a price, so it is not treated as the cheapest route.');
   }
 
   document.getElementById('tip-text').textContent = tips[0] || 'Try different departure times to find your sweet spot.';

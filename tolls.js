@@ -1,6 +1,5 @@
-// These prices are a local fallback for Melbourne routes. They are useful for
-// comparing options, but they are still estimates because Google does not tell
-// us exactly which toll points a route passes through.
+// These published prices make the project's 2026 reference data easy to audit.
+// Live route cards use Google's route-specific toll estimate instead.
 //
 // Prices checked: 14 July 2026
 // CityLink and West Gate Tunnel: 1 July to 30 September 2026
@@ -48,57 +47,6 @@ const TOLL_DATA = {
     carAccount: 0,
   },
 };
-
-function estimateTollCost(steps, dayOfWeek = null) {
-  let total = 0;
-  const roads = [];
-  const stepText = steps
-    .map(step => `${step.html_instructions || ''} ${step.maneuver || ''}`)
-    .join(' ')
-    .toLowerCase();
-
-  const usesCityLink = ['citylink', 'bolte bridge', 'domain tunnel', 'burnley tunnel']
-    .some(name => stepText.includes(name));
-
-  if (usesCityLink) {
-    const prices = TOLL_DATA.citylink.routes;
-    const candidates = [];
-
-    if (stepText.includes('tullamarine')) candidates.push(prices.tullamarine.carAccount);
-    if (stepText.includes('bolte')) candidates.push(prices.bolte.carAccount);
-    if (stepText.includes('domain')) candidates.push(prices.domain.carAccount);
-    if (stepText.includes('burnley')) candidates.push(prices.burnley.carAccount);
-    if (stepText.includes('monash')) candidates.push(prices.shortSection.carAccount);
-
-    // The road names do not reveal exact entry and exit toll points. Using the
-    // closest published end-to-end price is safer than adding overlapping trips.
-    const cityLinkEstimate = candidates.length
-      ? Math.min(Math.max(...candidates), TOLL_DATA.citylink.tripCap)
-      : prices.shortSection.carAccount;
-
-    total += cityLinkEstimate;
-    roads.push('CityLink');
-  }
-
-  if (stepText.includes('eastlink')) {
-    const isWeekend = ['saturday', 'sunday'].includes((dayOfWeek || '').toLowerCase());
-    total += isWeekend
-      ? TOLL_DATA.eastlink.weekendCarTripCap
-      : TOLL_DATA.eastlink.carTripCap;
-    roads.push('EastLink');
-  }
-
-  if (stepText.includes('west gate tunnel') || stepText.includes('westgate tunnel')) {
-    total += TOLL_DATA.westGateTunnel.carAccount;
-    roads.push('West Gate Tunnel');
-  }
-
-  return {
-    total: Math.round(total * 100) / 100,
-    roads,
-    estimated: roads.length > 0,
-  };
-}
 
 function checkPeak(timeStr, dayStr) {
   if (!timeStr) return false;
