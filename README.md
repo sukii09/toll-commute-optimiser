@@ -44,6 +44,9 @@ python3 -m http.server 8080
 
 Open [http://localhost:8080](http://localhost:8080), choose **configure**, and enter the browser key.
 
+or open via this link (deployed via github pages)
+https://sukii09.github.io/toll-commute-optimiser/
+
 ## Project structure
 
 ```text
